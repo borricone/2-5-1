@@ -1,55 +1,69 @@
 /*
- * VexFlow-based score renderer.
- * Renders a grand-staff score (4/4, half notes) for a sequence of voicings
- * in a given key, with chord symbols above and finger numbers next to notes.
+ * VexFlow score renderer — grand staff, 4/4, half notes.
+ * Requirements implemented:
+ *   - Brace + left barline connecting both staves.
+ *   - Chord symbols at a single fixed y above treble.
+ *   - Fingering: treble ABOVE, bass BELOW.
+ *   - Cross-stave note alignment via joint Formatter.format().
+ *   - Stem direction: furthest-note-from-middle-line rule.
+ *   - Equal measure widths.
+ *   - Beat-correct note placement (VexFlow Voice timing).
+ *   - Final bold-double barline crossing both staves.
+ *   - SVG viewBox height = 400 px.
  */
 (function (root) {
   const VF = Vex.Flow;
 
-  // Map our accidental strings to VexFlow accidental glyph codes.
-  function vfAccidental(acc) {
-    if (acc === '#') return '#';
-    if (acc === 'b') return 'b';
-    if (acc === '##') return '##';
-    if (acc === 'bb') return 'bb';
-    return null;
+  // MIDI pitch of the 3rd (middle) staff line per clef.
+  // Treble 3rd line = B4 = 71 ; Bass 3rd line = D3 = 50.
+  const MID = { treble: 71, bass: 50 };
+
+  // ── Stem direction ──────────────────────────────────────────────────
+  // Rule: the note that is furthest from the middle line dictates direction.
+  //   • that note is ABOVE centre  → stem DOWN
+  //   • that note is BELOW centre  → stem UP
+  //   • equidistant               → stem DOWN (convention)
+  function stemDir(notes, clef) {
+    if (!notes.length) return VF.Stem.DOWN;
+    const mid = MID[clef];
+    const hi  = Math.max(...notes.map(n => n.midi));
+    const lo  = Math.min(...notes.map(n => n.midi));
+    const above = hi - mid; // positive → hi is above centre
+    const below = mid - lo; // positive → lo is below centre
+    return above >= below ? VF.Stem.DOWN : VF.Stem.UP;
   }
 
-  // Build a chord StaveNote for one voicing side (LH or RH).
-  // notes: array of Note objects
-  // clef: 'treble' | 'bass'
-  // fingerings: array of finger numbers parallel to notes
-  // chordSymbol (optional, treble side only): string to print above the staff
-  // Accidentals are not added explicitly — the key signature handles them
-  // (all chord tones are diatonic). Accidental.applyAccidentals is called
-  // after voice creation to keep the notation strictly correct.
-  function buildStaveNote(notes, clef, fingerings, chordSymbol) {
+  // ── Accidental glyph mapping ────────────────────────────────────────
+  function vfAcc(acc) {
+    return ({ '#': '#', 'b': 'b', '##': '##', 'bb': 'bb' })[acc] || null;
+  }
+
+  // ── StaveNote factory ───────────────────────────────────────────────
+  function makeNote(notes, clef, fingerings) {
     const sorted = [...notes].sort((a, b) => a.midi - b.midi);
-    const keys = sorted.map((n) => n.vfKey);
-    const note = new VF.StaveNote({ clef, keys, duration: 'h' });
-
-    sorted.forEach((n, i) => {
-      const f = String(fingerings[i] ?? '');
-      if (!f) return;
-      const fh = new VF.FretHandFinger(f);
-      fh.setPosition(
-        clef === 'treble' ? VF.Modifier.Position.ABOVE : VF.Modifier.Position.BELOW
-      );
-      note.addModifier(fh, i);
+    const sn = new VF.StaveNote({
+      clef,
+      keys: sorted.map(n => n.vfKey),
+      duration: 'h',
+      stem_direction: stemDir(sorted, clef),
     });
-
-    if (chordSymbol) {
-      const cs = new VF.ChordSymbol()
-        .setFont('Arial', 15, 'bold')
-        .setHorizontal('center')
-        .addText(chordSymbol);
-      cs.setReportWidth(false);
-      note.addModifier(cs, 0);
-    }
-    return note;
+    sorted.forEach((n, i) => {
+      const a = vfAcc(n.accidental);
+      if (a) sn.addModifier(new VF.Accidental(a), i);
+    });
+    const pos = clef === 'treble'
+      ? VF.Modifier.Position.ABOVE
+      : VF.Modifier.Position.BELOW;
+    (fingerings || []).forEach((f, i) => {
+      if (f == null) return;
+      const fh = new VF.FretHandFinger(String(f));
+      fh.setPosition(pos);
+      sn.addModifier(fh, i);
+    });
+    return sn;
   }
 
-  function buildHalfRest(clef) {
+  function makeRest(clef) {
     return new VF.StaveNote({
       keys: [clef === 'treble' ? 'b/4' : 'd/3'],
       duration: 'hr',
@@ -57,111 +71,139 @@
     });
   }
 
-  // Render a single line: one or more measures of half notes representing
-  // the voicings array. Voicings of length 3 (ii-V-I) get a final half rest.
+  // ── Chord symbol text (b → ♭, # → ♯) ───────────────────────────────
+  function fmtSymbol(s) {
+    return s.replace(/([A-G])b/g, '$1♭').replace(/([A-G])#/g, '$1♯');
+  }
+
+  // ── Main render ─────────────────────────────────────────────────────
   function render(containerEl, voicings, key, opts = {}) {
     containerEl.innerHTML = '';
-    const halfCount = voicings.length;
-    const measures = Math.ceil(halfCount / 2);
-    const needsTrailingRest = halfCount % 2 === 1;
 
-    const containerWidth = containerEl.clientWidth || 800;
-    const totalWidth = Math.max(360, Math.min(containerWidth - 20, 1080));
+    const n        = voicings.length;           // total half notes
+    const measures = Math.ceil(n / 2);
+    const cw       = containerEl.clientWidth || 900;
+    const W        = Math.max(480, Math.min(cw - 24, 1100));
+    const H        = 400;                       // fixed SVG height
 
-    const firstMeasureWidth = Math.min(280, totalWidth * 0.4);
-    const restWidth = totalWidth - firstMeasureWidth;
-    const otherMeasureWidth = measures > 1 ? restWidth / (measures - 1) : restWidth;
+    // Vertical layout (all in SVG units):
+    //   0-30   : chord symbol row
+    //  30-90   : above-staff fingering + headroom
+    //  90-130  : treble stave (5 lines × 10 px)
+    // 130-220  : gap (ledger lines, below-treble fingering)
+    // 220-260  : bass stave
+    // 260-400  : below-staff fingering + margin
+    const TREBLE_Y   = 90;
+    const BASS_Y     = 220;
+    const CHORD_Y    = 28;  // fixed chord-symbol baseline
 
-    const trebleY = 40;
-    const bassY = 140;
-    const totalHeight = 250;
+    // Reserve px for brace on left
+    const BRACE_W    = 16;
+    const LEFT_MARGIN = BRACE_W + 2;
+    const measureW   = (W - LEFT_MARGIN) / measures;
 
     const renderer = new VF.Renderer(containerEl, VF.Renderer.Backends.SVG);
-    renderer.resize(totalWidth, totalHeight);
+    renderer.resize(W, H);
     const ctx = renderer.getContext();
 
-    const trebleStaves = [];
-    const bassStaves = [];
-
-    let x = 0;
+    // ── Draw staves ────────────────────────────────────────────────────
+    const tStaves = [], bStaves = [];
     for (let m = 0; m < measures; m++) {
-      const w = m === 0 ? firstMeasureWidth : otherMeasureWidth;
-      const treble = new VF.Stave(x, trebleY, w);
-      const bass = new VF.Stave(x, bassY, w);
+      const x = LEFT_MARGIN + m * measureW;
+      const t = new VF.Stave(x, TREBLE_Y, measureW);
+      const b = new VF.Stave(x, BASS_Y,   measureW);
       if (m === 0) {
-        treble.addClef('treble').addKeySignature(Theory.KEY_SIG[key]).addTimeSignature('4/4');
-        bass.addClef('bass').addKeySignature(Theory.KEY_SIG[key]).addTimeSignature('4/4');
+        t.addClef('treble').addKeySignature(Theory.KEY_SIG[key]).addTimeSignature('4/4');
+        b.addClef('bass')  .addKeySignature(Theory.KEY_SIG[key]).addTimeSignature('4/4');
       }
-      treble.setContext(ctx).draw();
-      bass.setContext(ctx).draw();
-      trebleStaves.push(treble);
-      bassStaves.push(bass);
-      x += w;
+      t.setContext(ctx).draw();
+      b.setContext(ctx).draw();
+      tStaves.push(t);
+      bStaves.push(b);
     }
 
-    // Brace + left line on first measure
-    new VF.StaveConnector(trebleStaves[0], bassStaves[0])
+    // ── Connectors ─────────────────────────────────────────────────────
+    // Brace on the left of first measure
+    new VF.StaveConnector(tStaves[0], bStaves[0])
       .setType(VF.StaveConnector.type.BRACE)
-      .setContext(ctx)
-      .draw();
-    new VF.StaveConnector(trebleStaves[0], bassStaves[0])
+      .setContext(ctx).draw();
+    new VF.StaveConnector(tStaves[0], bStaves[0])
       .setType(VF.StaveConnector.type.SINGLE_LEFT)
-      .setContext(ctx)
-      .draw();
-    // Right line on last measure
-    new VF.StaveConnector(
-      trebleStaves[trebleStaves.length - 1],
-      bassStaves[bassStaves.length - 1]
-    )
-      .setType(VF.StaveConnector.type.SINGLE_RIGHT)
-      .setContext(ctx)
-      .draw();
-    // Single barlines between measures (auto-drawn by stave borders, but we can be explicit)
+      .setContext(ctx).draw();
+
+    // Barlines between inner measures
     for (let m = 0; m < measures - 1; m++) {
-      new VF.StaveConnector(trebleStaves[m], bassStaves[m])
+      new VF.StaveConnector(tStaves[m], bStaves[m])
         .setType(VF.StaveConnector.type.SINGLE_RIGHT)
-        .setContext(ctx)
-        .draw();
+        .setContext(ctx).draw();
     }
+
+    // Final bold double barline crossing both staves
+    new VF.StaveConnector(tStaves[measures - 1], bStaves[measures - 1])
+      .setType(VF.StaveConnector.type.BOLD_DOUBLE_RIGHT)
+      .setContext(ctx).draw();
+
+    // ── Notes, formatting, and drawing ─────────────────────────────────
+    const symbolList = []; // {noteObj, symbol} for post-render SVG labels
 
     for (let m = 0; m < measures; m++) {
-      const trebleNotes = [];
-      const bassNotes = [];
+      const tNotes = [], bNotes = [];
+
       for (let beat = 0; beat < 2; beat++) {
         const idx = m * 2 + beat;
-        if (idx < halfCount) {
-          const v = voicings[idx];
-          trebleNotes.push(buildStaveNote(v.rh, 'treble', v.fingering.rh, v.chord.symbol));
-          bassNotes.push(buildStaveNote(v.lh, 'bass', v.fingering.lh));
+        if (idx < n) {
+          const v  = voicings[idx];
+          const tn = makeNote(v.rh, 'treble', v.fingering.rh);
+          const bn = makeNote(v.lh, 'bass',   v.fingering.lh);
+          tNotes.push(tn);
+          bNotes.push(bn);
+          symbolList.push({ note: tn, sym: v.chord.symbol });
         } else {
-          trebleNotes.push(buildHalfRest('treble'));
-          bassNotes.push(buildHalfRest('bass'));
+          const tr = makeRest('treble');
+          const br = makeRest('bass');
+          tNotes.push(tr);
+          bNotes.push(br);
         }
       }
 
-      const trebleVoice = new VF.Voice({ num_beats: 4, beat_value: 4 }).addTickables(trebleNotes);
-      const bassVoice = new VF.Voice({ num_beats: 4, beat_value: 4 }).addTickables(bassNotes);
-      // Let VexFlow add only the accidentals that the key signature doesn't
-      // already imply (no redundant glyphs).
-      VF.Accidental.applyAccidentals([trebleVoice], Theory.KEY_SIG[key]);
-      VF.Accidental.applyAccidentals([bassVoice], Theory.KEY_SIG[key]);
-      const stave = trebleStaves[m];
-      const formatWidth = Math.max(60, stave.getNoteEndX() - stave.getNoteStartX() - 10);
-      new VF.Formatter()
-        .joinVoices([trebleVoice, bassVoice])
-        .format([trebleVoice, bassVoice], formatWidth);
-      trebleVoice.draw(ctx, trebleStaves[m]);
-      bassVoice.draw(ctx, bassStaves[m]);
+      const tv = new VF.Voice({ num_beats: 4, beat_value: 4 }).addTickables(tNotes);
+      const bv = new VF.Voice({ num_beats: 4, beat_value: 4 }).addTickables(bNotes);
+
+      // Accidentals driven by key signature
+      VF.Accidental.applyAccidentals([tv], Theory.KEY_SIG[key]);
+      VF.Accidental.applyAccidentals([bv], Theory.KEY_SIG[key]);
+
+      // Format both voices together so notes are horizontally aligned
+      const fw = tStaves[m].getNoteEndX() - tStaves[m].getNoteStartX() - 8;
+      new VF.Formatter().format([tv, bv], fw);
+
+      tv.draw(ctx, tStaves[m]);
+      bv.draw(ctx, bStaves[m]);
     }
 
-    // Make SVG fluid
+    // ── Chord symbols at fixed y (drawn as raw SVG text after layout) ──
     const svg = containerEl.querySelector('svg');
     if (svg) {
-      svg.setAttribute('viewBox', `0 0 ${totalWidth} ${totalHeight}`);
+      symbolList.forEach(({ note, sym }) => {
+        if (!sym) return;
+        const el = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        el.setAttribute('x', String(note.getAbsoluteX()));
+        el.setAttribute('y', String(CHORD_Y));
+        el.setAttribute('text-anchor', 'middle');
+        el.setAttribute('font-family', 'Arial, Helvetica, sans-serif');
+        el.setAttribute('font-size', '15');
+        el.setAttribute('font-weight', 'bold');
+        el.setAttribute('fill', '#1a1a1a');
+        el.textContent = fmtSymbol(sym);
+        svg.appendChild(el);
+      });
+
+      // Fluid width, fixed viewBox height
+      svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
       svg.removeAttribute('width');
       svg.removeAttribute('height');
-      svg.style.width = '100%';
-      svg.style.maxHeight = (opts.maxHeight || 360) + 'px';
+      svg.style.width  = '100%';
+      svg.style.height = H + 'px';
     }
   }
 

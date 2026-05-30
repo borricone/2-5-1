@@ -119,7 +119,10 @@
       let lhBass = Theory.placeNearMidi(bassSp.letter, bassSp.accidental, 45);
       while (lhBass.midi < 40) lhBass = Theory.makeNote(lhBass.letter, lhBass.accidental, lhBass.octave + 1);
       while (lhBass.midi > 52) lhBass = Theory.makeNote(lhBass.letter, lhBass.accidental, lhBass.octave - 1);
-      const lhSecond = Theory.placeAboveMidi(secondSp.letter, secondSp.accidental, lhBass.midi);
+      let lhSecond = Theory.placeAboveMidi(secondSp.letter, secondSp.accidental, lhBass.midi);
+      // Constrain LH span to max one octave (12 semitones).
+      while (lhSecond.midi - lhBass.midi > 12)
+        lhSecond = Theory.makeNote(lhSecond.letter, lhSecond.accidental, lhSecond.octave - 1);
       const lh = [lhBass, lhSecond];
 
       // RH must cover the missing chord tones; doubling allowed for total 2 notes.
@@ -163,11 +166,17 @@
           while (lo.midi <= lhSecond.midi) lo = Theory.makeNote(lo.letter, lo.accidental, lo.octave + 1);
           let hi = Theory.placeNearMidi(pair[1].letter, pair[1].accidental, prevRH[1].midi);
           while (hi.midi <= lo.midi) hi = Theory.makeNote(hi.letter, hi.accidental, hi.octave + 1);
+          // Constrain RH span to max one octave.
+          if (hi.midi - lo.midi > 12) {
+            hi = Theory.makeNote(hi.letter, hi.accidental, hi.octave - 1);
+            if (hi.midi <= lo.midi) hi = Theory.makeNote(hi.letter, hi.accidental, hi.octave + 1);
+          }
+          if (hi.midi - lo.midi > 12) continue; // still too wide — skip
           const cost =
             Math.abs(lo.midi - prevRH[0].midi) + Math.abs(hi.midi - prevRH[1].midi);
           if (!best || cost < best.cost) best = { cost, voicing: [lo, hi] };
         }
-        rh = best.voicing;
+        rh = best ? best.voicing : prevRH; // fallback: keep previous voicing
       }
       prevRH = rh;
       out.push({
