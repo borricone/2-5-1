@@ -157,7 +157,6 @@
           const bn = makeNote(v.lh, 'bass',   v.fingering.lh);
           tNotes.push(tn);
           bNotes.push(bn);
-          symbolList.push({ note: tn, sym: v.chord.symbol });
         } else {
           const tr = makeRest('treble');
           const br = makeRest('bass');
@@ -189,9 +188,18 @@
         arr.forEach((note, beat) => {
           if (typeof note.getAbsoluteX !== 'function') return;
           const cur = note.getAbsoluteX();
-          note.setXShift((note.getXShift?.() ?? 0) + (targets[beat] - cur));
+          note.setXShift(targets[beat] - cur);
         });
       });
+
+      // Record chord-symbol x at the shifted note position (getAbsoluteX
+      // does not include xShift, so we use the target value we just set).
+      for (let beat = 0; beat < 2; beat++) {
+        const idx = m * 2 + beat;
+        if (idx < n) {
+          symbolList.push({ x: targets[beat], sym: voicings[idx].chord.symbol });
+        }
+      }
 
       tv.draw(ctx, tStaves[m]);
       bv.draw(ctx, bStaves[m]);
@@ -200,10 +208,10 @@
     // ── Chord symbols at fixed y (drawn as raw SVG text after layout) ──
     const svg = containerEl.querySelector('svg');
     if (svg) {
-      symbolList.forEach(({ note, sym }) => {
+      symbolList.forEach(({ x, sym }) => {
         if (!sym) return;
         const el = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-        el.setAttribute('x', String(note.getAbsoluteX()));
+        el.setAttribute('x', String(x));
         el.setAttribute('y', String(CHORD_Y));
         el.setAttribute('text-anchor', 'middle');
         el.setAttribute('font-family', 'Arial, Helvetica, sans-serif');
