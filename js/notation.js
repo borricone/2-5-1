@@ -177,6 +177,22 @@
       const fw = tStaves[m].getNoteEndX() - tStaves[m].getNoteStartX() - 8;
       new VF.Formatter().format([tv, bv], fw);
 
+      // Strict beat positioning: divide the usable measure width into 4 equal
+      // quarters; place each half note at the centre of the 1st and 3rd quarter
+      // (x = startX + usable * {1/8, 5/8}). The treble and bass voices keep
+      // sharing the same x since we shift both by the same delta.
+      const startX  = tStaves[m].getNoteStartX();
+      const endX    = tStaves[m].getNoteEndX();
+      const usable  = endX - startX;
+      const targets = [startX + usable * 0.125, startX + usable * 0.625];
+      [tNotes, bNotes].forEach((arr) => {
+        arr.forEach((note, beat) => {
+          if (typeof note.getAbsoluteX !== 'function') return;
+          const cur = note.getAbsoluteX();
+          note.setXShift((note.getXShift?.() ?? 0) + (targets[beat] - cur));
+        });
+      });
+
       tv.draw(ctx, tStaves[m]);
       bv.draw(ctx, bStaves[m]);
     }
