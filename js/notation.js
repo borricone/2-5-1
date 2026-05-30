@@ -178,31 +178,32 @@
 
       // Strict beat positioning: divide the usable measure width into 4 equal
       // quarters; place each half note at the centre of the 1st and 3rd quarter
-      // (x = startX + usable * {1/8, 5/8}). The treble and bass voices keep
-      // sharing the same x since we shift both by the same delta.
+      // (x = startX + usable * {1/8, 5/8}). VexFlow's setXShift only moves the
+      // notehead — modifiers (fingerings, accidentals) stay at their formatted
+      // x. We instead wrap each note's draw() in its own SVG <g transform=…>
+      // so the entire note glyph group (head + stem + accidentals + fingerings)
+      // moves together.
       const startX  = tStaves[m].getNoteStartX();
       const endX    = tStaves[m].getNoteEndX();
       const usable  = endX - startX;
       const targets = [startX + usable * 0.125, startX + usable * 0.625];
-      [tNotes, bNotes].forEach((arr) => {
-        arr.forEach((note, beat) => {
-          if (typeof note.getAbsoluteX !== 'function') return;
-          const cur = note.getAbsoluteX();
-          note.setXShift(targets[beat] - cur);
-        });
-      });
 
-      // Record chord-symbol x at the shifted note position (getAbsoluteX
-      // does not include xShift, so we use the target value we just set).
       for (let beat = 0; beat < 2; beat++) {
+        [
+          [tNotes[beat], tStaves[m]],
+          [bNotes[beat], bStaves[m]],
+        ].forEach(([note, stave]) => {
+          const dx = targets[beat] - note.getAbsoluteX();
+          const g = ctx.openGroup();
+          if (g && dx) g.setAttribute('transform', `translate(${dx.toFixed(2)},0)`);
+          note.setContext(ctx).setStave(stave).draw();
+          ctx.closeGroup();
+        });
         const idx = m * 2 + beat;
         if (idx < n) {
           symbolList.push({ x: targets[beat], sym: voicings[idx].chord.symbol });
         }
       }
-
-      tv.draw(ctx, tStaves[m]);
-      bv.draw(ctx, bStaves[m]);
     }
 
     // ── Chord symbols at fixed y (drawn as raw SVG text after layout) ──
