@@ -125,6 +125,12 @@
       const tv = new VF.Voice({ num_beats: 4, beat_value: 4 }).addTickables(tNotes);
       const bv = new VF.Voice({ num_beats: 4, beat_value: 4 }).addTickables(bNotes);
 
+      // Assign stave to notes BEFORE formatting so getAbsoluteX returns
+      // coordinates in screen space (otherwise it's local to the formatter
+      // and dx ends up huge — pushing measure-2 notes off the SVG).
+      tNotes.forEach((nt) => nt.setStave(tStaves[m]));
+      bNotes.forEach((nt) => nt.setStave(bStaves[m]));
+
       VF.Accidental.applyAccidentals([tv], Theory.KEY_SIG[key]);
       VF.Accidental.applyAccidentals([bv], Theory.KEY_SIG[key]);
 
@@ -134,16 +140,16 @@
       // Place each half note at the beat-correct position:
       //   beat 0 → 1/8 of usable width from note-start
       //   beat 1 → 5/8 of usable width from note-start
-      // We use setXShift (applied before draw so accidentals move too).
       const startX  = tStaves[m].getNoteStartX();
       const endX    = tStaves[m].getNoteEndX();
       const usable  = endX - startX;
       const targets = [startX + usable * 0.125, startX + usable * 0.625];
 
       for (let beat = 0; beat < 2; beat++) {
-        const dx = targets[beat] - tNotes[beat].getAbsoluteX();
-        tNotes[beat].setXShift(dx);
-        bNotes[beat].setXShift(dx);
+        const dxT = targets[beat] - tNotes[beat].getAbsoluteX();
+        const dxB = targets[beat] - bNotes[beat].getAbsoluteX();
+        tNotes[beat].setXShift(dxT);
+        bNotes[beat].setXShift(dxB);
 
         const idx = m * 2 + beat;
         if (idx < n) {
@@ -151,7 +157,7 @@
         }
       }
 
-      // Draw voices — this renders all notes (both beats) in the measure.
+      // Draw voices — renders all tickables in the measure.
       tv.draw(ctx, tStaves[m]);
       bv.draw(ctx, bStaves[m]);
     }
